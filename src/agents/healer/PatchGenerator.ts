@@ -122,14 +122,28 @@ export async function applyLocatorPatch(params: ApplyLocatorPatchParams): Promis
  * Real (non-injected) verification step: re-runs exactly the one test that
  * was failing. `-g` matches the test title as a regex, so special
  * characters in the title are escaped first.
+ *
+ * Runs with `--output` pointed at a scratch directory rather than the
+ * default `test-results/` — Playwright wipes its whole output directory at
+ * the start of every run, and `healFailures.ts` processes *all* failures
+ * from one shared `test-results/` in a single loop. Without this, verifying
+ * the very first successful heal would delete the on-disk `full-dom`
+ * evidence (see buildFailureInput.ts) for every other not-yet-processed
+ * failure in the same batch, silently turning them all into "not healed"
+ * regardless of whether they were actually healable (verified live — see
+ * the CI run this comment was added in response to).
  */
 export function runAffectedTestSync(testFile: string, testTitle: string, project = 'ui-chromium'): boolean {
   const escapedTitle = testTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   try {
-    execFileSync('npx', ['playwright', 'test', testFile, '--project', project, '-g', escapedTitle], {
-      stdio: 'pipe',
-      timeout: 60_000,
-    });
+    execFileSync(
+      'npx',
+      ['playwright', 'test', testFile, '--project', project, '-g', escapedTitle, '--output', 'test-results-verify'],
+      {
+        stdio: 'pipe',
+        timeout: 60_000,
+      }
+    );
     return true;
   } catch {
     return false;
