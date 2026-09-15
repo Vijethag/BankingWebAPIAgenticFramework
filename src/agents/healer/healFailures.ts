@@ -15,7 +15,7 @@
  *   npm run heal:failures                 # reads test-results/results.json
  *   npm run heal:failures -- path/to.json # or an explicit path
  *
- * Requires ANTHROPIC_API_KEY to be set for any actual heal *attempt* (only
+ * Requires OPENAI_API_KEY to be set for any actual heal *attempt* (only
  * thrown lazily, inside proposeLocatorFix, so runs with zero healable
  * candidates never need it).
  */

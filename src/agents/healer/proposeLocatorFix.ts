@@ -16,9 +16,13 @@
  * locator expression. It never touches files, git, or test execution —
  * PatchGenerator.applyLocatorPatch does that, and always re-runs the
  * affected test to verify before keeping the change (see that file).
+ *
+ * Uses OpenAI's Chat Completions API with `response_format: json_object`
+ * for reliable structured output (the JSON-fence-stripping fallback below
+ * is defense in depth, not the primary mechanism).
  */
 
-import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 
 export interface LocatorFixProposal {
   /** A full Playwright locator expression, e.g. `page.locator('input[name="username"]')` — always starts with "page.". */
@@ -38,7 +42,7 @@ export interface ProposeLocatorFixInput {
   testSource?: string;
 }
 
-const DEFAULT_MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5-20250929';
+const DEFAULT_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 
 /** Keeps the prompt (and cost/latency) bounded — full pages can be very large; the relevant markup is almost always near the top/body. */
 const MAX_DOM_CHARS = 12_000;
@@ -77,7 +81,7 @@ function buildUserMessage(input: ProposeLocatorFixInput): string {
     .join('\n');
 }
 
-/** Strips ```json ... ``` fences if the model wraps its JSON despite instructions not to. */
+/** Strips ```json ... ``` fences if the model wraps its JSON despite instructions not to (defense in depth on top of response_format: json_object). */
 function extractJsonPayload(text: string): string {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   return (fenced ? fenced[1] : text).trim();
@@ -106,7 +110,7 @@ function parseProposal(text: string): LocatorFixProposal | null {
 }
 
 /**
- * Calls Claude to propose a replacement locator. Returns `null` (never
+ * Calls OpenAI to propose a replacement locator. Returns `null` (never
  * throws for a "no good answer" case) when the model couldn't find a
  * plausible match or returned something unparseable/unsafe — the caller
  * (healFailures.ts) treats that exactly like "could not heal automatically".
@@ -115,25 +119,27 @@ function parseProposal(text: string): LocatorFixProposal | null {
  * error) so those are visibly distinct from "the model tried and failed".
  */
 export async function proposeLocatorFix(input: ProposeLocatorFixInput): Promise<LocatorFixProposal | null> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     throw new Error(
-      'ANTHROPIC_API_KEY is not set — required for LLM-assisted locator healing. Set it in config/.env locally, or as a GitHub Actions secret in CI.'
+      'OPENAI_API_KEY is not set — required for LLM-assisted locator healing. Set it in config/.env locally, or as a GitHub Actions secret in CI.'
     );
   }
 
-  const client = new Anthropic({ apiKey });
-  const response = await client.messages.create({
+  const client = new OpenAI({ apiKey });
+  const completion = await client.chat.completions.create({
     model: DEFAULT_MODEL,
-    max_tokens: 512,
-    system: SYSTEM_PROMPT,
-    messages: [{ role: 'user', content: buildUserMessage(input) }],
+    response_format: { type: 'json_object' },
+    messages: [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: buildUserMessage(input) },
+    ],
   });
 
-  const textBlock = response.content.find((block): block is Anthropic.TextBlock => block.type === 'text');
-  if (!textBlock) return null;
+  const text = completion.choices[0]?.message?.content;
+  if (!text) return null;
 
-  const proposal = parseProposal(textBlock.text);
+  const proposal = parseProposal(text);
   if (!proposal || !proposal.newLocatorExpression) return null;
 
   return proposal;

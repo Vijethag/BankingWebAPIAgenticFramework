@@ -32,7 +32,7 @@
     "zod": "^4.6.5"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.125.0",
+    "openai": "^7.15.0",
     "uuid": "^14.0.2"
   }
 }
