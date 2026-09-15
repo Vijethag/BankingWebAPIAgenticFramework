@@ -1,0 +1,187 @@
+name: Self-Healing CI
+
+# Two jobs, matching the architecture plan's diagram exactly:
+#
+#   test  -> runs the full suite against a real, ephemeral ParaBank
+#            (parasoft/parabank, as a GH Actions *service container* — no
+#            self-hosted runner or pre-existing Docker instance needed)
+#   heal  -> only runs if `test` failed. Re-runs the deterministic
+#            FailureAnalyzer (Step 28) -> HealerAgent guardrails (Step 29)
+#            -> LLM-assisted PatchGenerator (Step 30) pipeline against that
+#            failure, verifies any candidate patch by re-running the exact
+#            test that failed, and — only if that passes — opens a real PR
+#            for human review. It never pushes straight to main.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  UI_BASE_URL: http://localhost:8080/parabank/
+  API_BASE_URL: http://localhost:8080/parabank/services/bank
+
+jobs:
+  test:
+    name: Run tests
+    runs-on: ubuntu-latest
+    services:
+      parabank:
+        image: parasoft/parabank:latest
+        ports:
+          - 8080:8080
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - run: npx playwright install --with-deps chromium
+
+      # ParaBank's DB seeds lazily on first request (see specs/transfer-funds.md)
+      # — the seeded john/demo user this whole suite depends on doesn't exist
+      # until index.htm's redirect to initializeDB.htm is actually followed.
+      # `curl -L` (not a bare HEAD/no-redirect check) triggers that.
+      - name: Wait for ParaBank and trigger lazy DB init
+        run: |
+          for i in $(seq 1 30); do
+            code=$(curl -sL -o /dev/null -w "%{http_code}" http://localhost:8080/parabank/index.htm || echo 000)
+            if [ "$code" = "200" ]; then
+              echo "ParaBank is up (attempt $i)"
+              exit 0
+            fi
+            echo "Waiting for ParaBank... (attempt $i, http=$code)"
+            sleep 5
+          done
+          echo "ParaBank did not become ready in time" >&2
+          exit 1
+
+      - run: npm run typecheck
+      - run: npm run typecheck:tests
+      - run: npm run test:unit
+
+      - name: Run Playwright suite
+        id: playwright
+        run: npx playwright test
+        continue-on-error: true
+
+      # Uploaded even on failure — this is exactly what the `heal` job needs
+      # (results.json for classification, error-context.md + full-dom for
+      # the Healer's evidence).
+      - name: Upload test-results (evidence for the heal job)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test-results/
+          retention-days: 7
+
+      - name: Upload HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-html-report
+          path: reports/html-report/
+          retention-days: 30
+
+      # continue-on-error above kept later steps (artifact uploads) running
+      # even on a red suite; fail the job for real now so `needs.test.result
+      # == 'failure'` correctly gates the heal job below.
+      - name: Fail the job if the Playwright suite failed
+        if: steps.playwright.outcome == 'failure'
+        run: exit 1
+
+  heal:
+    name: Attempt self-heal
+    needs: test
+    if: always() && needs.test.result == 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    services:
+      parabank:
+        image: parasoft/parabank:latest
+        ports:
+          - 8080:8080
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - run: npx playwright install --with-deps chromium
+
+      - name: Wait for ParaBank and trigger lazy DB init
+        run: |
+          for i in $(seq 1 30); do
+            code=$(curl -sL -o /dev/null -w "%{http_code}" http://localhost:8080/parabank/index.htm || echo 000)
+            if [ "$code" = "200" ]; then
+              echo "ParaBank is up (attempt $i)"
+              exit 0
+            fi
+            echo "Waiting for ParaBank... (attempt $i, http=$code)"
+            sleep 5
+          done
+          echo "ParaBank did not become ready in time" >&2
+          exit 1
+
+      - name: Download test-results from the failing run
+        uses: actions/download-artifact@v4
+        with:
+          name: test-results
+          path: test-results
+
+      # Step 28 (classify) -> Step 29 (healable guardrail) -> Step 30
+      # (LLM-assisted patch, verified by re-running the exact failing test).
+      # Only ever leaves modified files on disk for patches that verified
+      # green; everything else is evidence-only. See src/agents/healer/.
+      - name: Run Healer
+        id: heal
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: npm run heal:failures
+
+      - name: Upload healing evidence (classification + reasoning + patches, healed or not)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: healing-evidence
+          path: artifacts/healing/
+          retention-days: 30
+
+      # AI proposes, human approves — never pushed straight to main. Only
+      # reached when healFailures.ts verified at least one patch by actually
+      # re-running the test that had failed (see steps.heal.outputs.healed).
+      - name: Open a PR with the verified patch(es)
+        if: steps.heal.outputs.healed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "parabank-healer-bot"
+          git config user.email "actions@github.com"
+
+          branch="heal/run-${{ github.run_id }}"
+          git checkout -b "$branch"
+          git add -A
+          git commit -m "self-heal: auto-repair locator drift (run ${{ github.run_id }})" \
+                      -m "Generated by src/agents/healer/healFailures.ts. Every change here was verified by re-running the exact previously-failing test before being committed. See the healing-evidence workflow artifact for the classification, LLM rationale, and confidence behind each fix." \
+                      -m "This is a proposal only, per this project's Healer guardrails (src/agents/healer/HealerAgent.ts) — review and merge like any other PR."
+          git push origin "$branch"
+
+          gh pr create \
+            --title "Self-heal: auto-repaired locator drift (run ${{ github.run_id }})" \
+            --base "${{ github.event.repository.default_branch || 'main' }}" \
+            --head "$branch" \
+            --body "Automated by the FailureAnalyzer -> HealerAgent -> PatchGenerator pipeline (\`src/agents/healer/\`). Every patch was verified by re-running the exact test that failed *before* this PR was opened — see the **healing-evidence** artifact on this run for full reasoning (classification, LLM rationale, confidence) per patch.
+
+          **This is a proposal, not an auto-merge.** Please review the diff like any other change."

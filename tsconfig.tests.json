@@ -1,0 +1,21 @@
+{
+  // Dev-only: type-checks tests/ alongside src/. The root tsconfig.json
+  // intentionally excludes tests/ (package model — only src/ is "published"/
+  // built), and neither Playwright (esbuild) nor @swc/jest type-check at
+  // runtime, so without this, type errors in spec files go unnoticed until
+  // they fail at runtime. Not used for building or publishing.
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "es2022",
+    "moduleResolution": "bundler",
+    "lib": ["ES2020", "DOM"],
+    "types": ["node", "jest"],
+    "strict": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts", "*.ts"],
+  "exclude": ["node_modules", "dist", "reports", "allure-results"]
+}

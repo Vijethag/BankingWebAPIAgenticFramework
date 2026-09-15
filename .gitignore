@@ -1,0 +1,38 @@
+
+# Playwright
+node_modules/
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+/playwright/.auth/
+
+#env files
+config/.env
+config/.env.*
+!config/.env.example
+
+#playwright-cli exploration artifacts (snapshots, console logs from planning/healing sessions)
+.playwright-cli/
+
+# globalSetup-generated data (e.g. the api-accounts worker pool) — regenerated every run
+.generated/
+
+#Failure Analyzer output (src/agents/healer/analyzeFailures.ts) — regenerated every run
+artifacts/
+
+#reports
+reports/
+allure-report/
+allure-results/
+playwright-reports/
+test-results/
+
+#build
+dist/
+
+#auth
+src/data/auth.json
+
+
+.DS_Store
