@@ -73,8 +73,16 @@ jobs:
       # Uploaded even on failure — this is exactly what the `heal` job needs
       # (results.json for classification, error-context.md + full-dom for
       # the Healer's evidence).
+      # continue-on-error: the *job's* pass/fail signal is decided solely by
+      # "Fail the job if the Playwright suite failed" below — an upload
+      # failure here (e.g. a transient GitHub Actions artifact-service 403,
+      # verified live: FinalizeArtifact intermittently returns "403
+      # Forbidden: Error from intermediary" with no code/test involved)
+      # must never masquerade as a real test failure and spuriously trigger
+      # the heal job.
       - name: Upload test-results (evidence for the heal job)
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: test-results
@@ -83,6 +91,7 @@ jobs:
 
       - name: Upload HTML report
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: playwright-html-report
