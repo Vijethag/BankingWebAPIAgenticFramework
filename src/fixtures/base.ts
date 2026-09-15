@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import { test as baseTest, expect } from '@playwright/test';
 import { LoginPage } from '../pages/LoginPage';
 import { RegisterPage } from '../pages/RegisterPage';
@@ -85,13 +86,23 @@ export const test = baseTest.extend<TestFixtures, WorkerFixtures>({
    * actually is* on a locator-drift failure. The raw DOM captured here is
    * what src/agents/healer/proposeLocatorFix.ts sends an LLM to propose a
    * concrete replacement locator.
+   *
+   * Attached via `path` (a real file under the test's output dir), not
+   * `body` — src/agents/healer/buildFailureInput.ts's findAttachmentPath()
+   * only ever reads an attachment's `.path`. Playwright's JSON reporter
+   * embeds `body`-based attachments inline (base64) instead of writing them
+   * to disk, so a `body` attachment here would leave `fullDomPath` undefined
+   * for every failure and silently disable the Healer entirely (verified
+   * live — see the CI run this comment was added in response to).
    */
   page: async ({ page }, use, testInfo) => {
     await use(page);
     if (testInfo.status !== 'passed' && testInfo.status !== 'skipped') {
       try {
         const html = await page.content();
-        await testInfo.attach('full-dom', { body: html, contentType: 'text/html' });
+        const domPath = testInfo.outputPath('full-dom.html');
+        fs.writeFileSync(domPath, html, 'utf-8');
+        await testInfo.attach('full-dom', { path: domPath, contentType: 'text/html' });
       } catch {
         // Best-effort only — the page may already be closed/navigated away
         // after certain hard failures (e.g. a crashed browser context).
