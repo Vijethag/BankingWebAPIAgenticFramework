@@ -28,6 +28,11 @@ allure-results/
 playwright-reports/
 test-results/
 
+# scratch --output dir used by the Healer's verification re-run
+# (src/agents/healer/PatchGenerator.ts's runAffectedTestSync) — kept
+# separate from test-results/ on purpose, see that file for why.
+/test-results-verify/
+
 #build
 dist/
 
